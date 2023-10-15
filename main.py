@@ -1,15 +1,17 @@
 import re
 import json
+import time
 from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup, Tag
+import pandas as pd
 
 
 BASE_URL = r"https://freiplatzmeldungen.de/kinder-jugendliche-und-familien.html"
 URL_SCRAPE_NO_PAGE = r"https://freiplatzmeldungen.de/ajax.php?action=fmd&id=29&use=searchform_update&pageId=40"
 
-ALL_REPORTS_PICKLE_PATH = r"/home/sven/git_repos/freiplatzmeldung/data/all_reports.pkl"
+COUNTER = 0
 
 
 class RequestCookie:
@@ -53,6 +55,7 @@ class Report:
         self.homepage = None
         self.standort = None
         self.kurzbeschreibung = None
+        self.counter = None
 
     def add_details(self, cookie: RequestCookie):
         soup = get_soup_zusatzinfos(
@@ -62,32 +65,101 @@ class Report:
         )
 
         infoblock_zusatzinfos = soup.select(".infoblock.zusatzinfos")[0]
-        self.betreuungsumfang = [elem.find_next("dd").text for elem in infoblock_zusatzinfos(text="Betreuungsumfang:")][0]
-        self.geschlecht_allgemein = [elem.find_next("dd").text for elem in infoblock_zusatzinfos(text="Geschlecht allgemein:")][0]
-        self.gesamtkapazitaet = [elem.find_next("dd").text for elem in infoblock_zusatzinfos(text="Gesamtkapazität:")][0]
+        self.betreuungsumfang = [
+            elem.find_next("dd").text for elem in infoblock_zusatzinfos(text="Betreuungsumfang:")
+        ][0]
+        self.geschlecht_allgemein = [
+            elem.find_next("dd").text for elem in infoblock_zusatzinfos(text="Geschlecht allgemein:")
+        ][0]
+
+        try:
+            self.gesamtkapazitaet = [
+                elem.find_next("dd").text for elem in infoblock_zusatzinfos(text="Gesamtkapazität:")
+            ][0]
+        except IndexError:
+            self.gesamtkapazitaet = ""
+
         self.kostensatz = [elem.find_next("dd").text for elem in infoblock_zusatzinfos(text="Kostensatz:")][0]
-        self.betriebserlaubnis = [elem.find_next("dd").text for elem in infoblock_zusatzinfos(text="Betriebserlaubnis:")][0]
+        self.betriebserlaubnis = [
+            elem.find_next("dd").text for elem in infoblock_zusatzinfos(text="Betriebserlaubnis:")
+        ][0]
 
         infoblock_kontaktdaten = soup.select(".infoblock.kontaktdaten")[0]
-        self.projektleiter_in = [elem.find_next("dd").text for elem in infoblock_kontaktdaten(text="Projektleiter_in")][0]
-        self.telefon = [elem.find_next("dd").text for elem in infoblock_kontaktdaten(text="Telefon")][0]
-        self.telefon_mobil = [elem.find_next("dd").text for elem in infoblock_kontaktdaten(text="Mobile Nummer")][0]
+        self.projektleiter_in = [
+            elem.find_next("dd").text for elem in infoblock_kontaktdaten(text="Projektleiter_in")
+        ][0]
+
         try:
-            self.telefax = [elem.find_next("dd").text for elem in infoblock_kontaktdaten(text="Telefax")][0]
+            self.telefon = [elem.find_next("dd").text for elem in infoblock_kontaktdaten(text="Telefon")][0]
+        except IndexError:
+            self.telefon = ""
+
+        try:
+            self.telefon_mobil = [elem.find_next("dd").text for elem in infoblock_kontaktdaten(text="Mobile Nummer")][0]
+        except IndexError:
+            self.telefon_mobil = ""
+
+        try:
+            self.telefax = [elem.find_next("dd").text for elem in infoblock_kontaktdaten(text="Fax")][0]
         except IndexError:
             self.telefax = ""
-        self.email = [elem.find_next("dd").text for elem in infoblock_kontaktdaten(text="E-Mail")][0]
 
-        infoblock_map = soup.select(".infoblock.map")[0]
-        self.standort = infoblock_map.find_next("div", class_="margin_10_bottom").text
+        try:
+            self.email = [elem.find_next("dd").text for elem in infoblock_kontaktdaten(text="E-Mail")][0]
+        except IndexError:
+            self.email = ""
 
-        infoblock_kurzbeschreibung = soup.select(".infoblock.kurzbeschreibung")[0]
-        self.kurzbeschreibung = infoblock_kurzbeschreibung.find_next("dd", class_="margin_10_bottom").text
+        try:
+            infoblock_map = soup.select(".infoblock.map")[0]
+            self.standort = infoblock_map.find_next("div", class_="margin_10_bottom").text
+        except IndexError:
+            self.standort = ""
 
-        footericons_wrapper = soup.select(".footericons_wrapper")[0]
-        self.homepage = footericons_wrapper.find_next("a", class_="icon_link")["href"]
+        try:
+            infoblock_kurzbeschreibung = soup.select(".infoblock.kurzbeschreibung")[0]
+            self.kurzbeschreibung = infoblock_kurzbeschreibung.find_next("dd", class_="margin_10_bottom").text
+        except IndexError:
+            self.kurzbeschreibung = ""
 
+        try:
+            footericons_wrapper = soup.select(".footericons_wrapper")[0]
+            self.homepage = footericons_wrapper.find_next("a", class_="icon_link")["href"]
+        except IndexError:
+            self.homepage = ""
+
+        print(f"Progress: got details for report {self.counter:{len(str(COUNTER))}d}/{COUNTER}")
         return self
+
+    def to_pd_series(self) -> pd.Series:
+        report_data = {
+            'Freie Plätze': self.freie_plaetze,
+            'Freie Plätze ab': self.freie_plaetze_ab,
+            'Kommentarfeld': self.kommentarfeld,
+            'Träger': self.traeger,
+            'Hilfeform': "; ".join(self.hilfeform),
+            'Projektausrichtung': "; ".join(self.projektausrichtung),
+            'Alter': self.alter,
+            'Einsatzgebiet Standort': "; ".join(self.einsatzgebiet_standort),
+            'Geschlecht': self.geschlecht,
+            'Aktualisiert am': self.aktualisiert_am,
+            'url': f"https://freiplatzmeldungen.de/{self.href}",
+            'Angebotstitel': self.angebotstitel,
+            'Betreuungsumfang': self.betreuungsumfang,
+            'Gesamtkapazität': self.gesamtkapazitaet,
+            'Geschlecht allgemein': self.geschlecht_allgemein,
+            'Kostensatz': self.kostensatz,
+            'Betriebserlaubnis': self.betriebserlaubnis,
+            'Projektleiter/in': self.projektleiter_in,
+            'Telefon': self.telefon,
+            'Telefon mobil': f"'{self.telefon_mobil}",
+            'Telefax': f"'{self.telefax}",
+            'E-Mail': self.email,
+            'Homepage': self.homepage,
+            'Standort': self.standort,
+            'Kurzbeschreibung': self.kurzbeschreibung
+        }
+
+        return pd.Series(report_data)
 
 
 def get_cookie(url: str) -> RequestCookie:
@@ -119,7 +191,7 @@ def get_soup_zusatzinfos(url: str, path: str, cookie: RequestCookie) -> Beautifu
     }
 
     response = requests.get(url=url, headers=headers_zusatzinfos)
-    soup = BeautifulSoup(response.content)
+    soup = BeautifulSoup(response.content, features="html.parser")
 
     return soup
 
@@ -170,7 +242,7 @@ def get_soup_liste(url: str, cookie: RequestCookie) -> BeautifulSoup:
     return soup
 
 
-def create_report_from_container_elem(container_offer_halfbox: Tag) -> Report:
+def create_report_from_container_elem(container_offer_halfbox: Tag, counter: int) -> Report:
     angebotstitel = container_offer_halfbox.find_next("h2", class_="offertitle").text
 
     try:
@@ -231,27 +303,31 @@ def create_report_from_container_elem(container_offer_halfbox: Tag) -> Report:
         href=href,
         angebotstitel=angebotstitel
     )
+    report.counter = counter
 
     return report
 
 
-def generate_reports(cookie: RequestCookie, pickle_data_after_requests: bool = False) -> list[Report]:
+def generate_reports(cookie: RequestCookie) -> list[Report]:
+    global COUNTER
     url_scrape = f"{URL_SCRAPE_NO_PAGE}&page=1"
     soup_first_page = get_soup_liste(url=url_scrape, cookie=cookie)
     max_page = int(soup_first_page.find_all("a", class_="last")[0].attrs["title"].lower().replace("gehe zu seite ", ""))
 
     all_reports = []
-    for page in range(1, 2): #max_page + 1):
+    for page in range(1, max_page + 1):
         url_scrape = f"{URL_SCRAPE_NO_PAGE}&page={page}"
         soup_first_page = get_soup_liste(url=url_scrape, cookie=cookie)
         container_offer_halfboxes = soup_first_page.select(".container_offer.halfbox")
 
         for container_offer_halfbox in container_offer_halfboxes:
-            report = create_report_from_container_elem(container_offer_halfbox)
+            report = create_report_from_container_elem(container_offer_halfbox, counter=COUNTER)
+            COUNTER = COUNTER + 1
 
             all_reports.append(report)
         print(f"Progress: {page:03d}/{max_page} pages done")
 
+    print(f"Progress: Total of {COUNTER} ads found.")
     return all_reports
 
 
@@ -260,13 +336,16 @@ def main():
 
     all_reports = generate_reports(cookie)
 
+    df_reports = pd.DataFrame()
+
     for report in all_reports:
         report.add_details(cookie=cookie)
+        df_reports = df_reports._append(report.to_pd_series(), ignore_index=True)
+        time.sleep(0.1)
 
-
-        print()
-
-    print()
+    filepath = "freiplatzmeldungen.csv"
+    df_reports.to_csv(filepath, index=False)
+    print(f"created file under '{filepath}'")
 
 
 if __name__ == "__main__":
